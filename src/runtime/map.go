@@ -1224,9 +1224,11 @@ func evacuate(t *maptype, h *hmap, oldbucket uintptr) {
 						// We recompute a new random tophash for the next level so
 						// these keys will get evenly distributed across all buckets
 						// after multiple grows.
+                        //对于math.NaN()的特殊key，使用的特殊映射方式，用了top的第一位，这个比较特殊
 						useY = top & 1
 						top = tophash(hash)
 					} else {
+                        //使用计算的hash值，跟位数求交，其实是取新的B那一位来决定这个key在前面的半部分也就是原位置，还是后面的半部分的心位置
 						if hash&newbit != 0 {
 							useY = 1
 						}
@@ -1237,6 +1239,7 @@ func evacuate(t *maptype, h *hmap, oldbucket uintptr) {
 					throw("bad evacuatedN")
 				}
 
+                //修改老的bucket，标识数据已经迁移到了x或者Y里面了
 				b.tophash[i] = evacuatedX + useY // evacuatedX + 1 == evacuatedY
 				dst := &xy[useY]                 // evacuation destination
 
@@ -1248,6 +1251,8 @@ func evacuate(t *maptype, h *hmap, oldbucket uintptr) {
 					dst.e = add(dst.k, bucketCnt*uintptr(t.keysize))
 				}
 				dst.b.tophash[dst.i&(bucketCnt-1)] = top // mask dst.i as an optimization, to avoid a bounds check
+                //上面复制top值，其实不会变，除了特殊的nun类型外。下面判断key是不是指针，作相应的拷贝动作
+                //如果是飞指针类型，就直接进行memmove
 				if t.indirectkey() {
 					*(*unsafe.Pointer)(dst.k) = k2 // copy pointer
 				} else {
@@ -1378,6 +1383,7 @@ func reflect_mapassign(t *maptype, h *hmap, key unsafe.Pointer, elem unsafe.Poin
 //go:linkname reflect_mapassign_faststr reflect.mapassign_faststr
 func reflect_mapassign_faststr(t *maptype, h *hmap, key string, elem unsafe.Pointer) {
 	p := mapassign_faststr(t, h, key)
+    //更新value到p位置
 	typedmemmove(t.elem, p, elem)
 }
 

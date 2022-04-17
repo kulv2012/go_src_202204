@@ -211,6 +211,7 @@ func mapassign_faststr(t *maptype, h *hmap, s string) unsafe.Pointer {
 	if h.flags&hashWriting != 0 {
 		throw("concurrent map writes")
 	}
+    //计算这个key的hash值，然后设置hashWriting 的标记，后面会清空这个标记
 	key := stringStructOf(&s)
 	hash := t.hasher(noescape(unsafe.Pointer(&s)), uintptr(h.hash0))
 
@@ -218,14 +219,17 @@ func mapassign_faststr(t *maptype, h *hmap, s string) unsafe.Pointer {
 	h.flags ^= hashWriting
 
 	if h.buckets == nil {
+        //第一次，新建一个很小的bucket
 		h.buckets = newobject(t.bucket) // newarray(t.bucket, 1)
 	}
 
 again:
+    //根据前面的B位，获取这个hash应该归属哪个bucket。如果在增长中或者迁移中，则调用growWork_faststr迁移一下再操作
 	bucket := hash & bucketMask(h.B)
 	if h.growing() {
 		growWork_faststr(t, h, bucket)
 	}
+    //找到对应的bucket槽位，用b代替。计算top值，其实就是左移64-8位，获取最高8位。得到十进制值就是tophash的值，用来比较。
 	b := (*bmap)(add(h.buckets, bucket*uintptr(t.bucketsize)))
 	top := tophash(hash)
 
@@ -235,8 +239,10 @@ again:
 
 bucketloop:
 	for {
+        //循环8次，因为一个bucket可以存8个key
 		for i := uintptr(0); i < bucketCnt; i++ {
 			if b.tophash[i] != top {
+                //不相等，是空的，就插入
 				if isEmpty(b.tophash[i]) && insertb == nil {
 					insertb = b
 					inserti = i
@@ -246,21 +252,26 @@ bucketloop:
 				}
 				continue
 			}
+            //tophash相等，那接下来需要比较内存字符串了，存的实际是指针。
 			k := (*stringStruct)(add(unsafe.Pointer(b), dataOffset+i*2*goarch.PtrSize))
 			if k.len != key.len {
 				continue
 			}
+            //比较字符串，如果不相等，继续找
 			if k.str != key.str && !memequal(k.str, key.str, uintptr(key.len)) {
 				continue
 			}
+            //相等，需要修改一下value。
 			// already have a mapping for key. Update it.
 			inserti = i
 			insertb = b
+            //如注释，修改一下key，这样让老的key可以过期，让新的常驻
 			// Overwrite existing key, so it can be garbage collected.
 			// The size is already guaranteed to be set correctly.
 			k.str = key.str
 			goto done
 		}
+        //如果还没找到，说明需要进一步看下面的overflow，更新ovf后继续循环。
 		ovf := b.overflow(t)
 		if ovf == nil {
 			break
@@ -273,15 +284,17 @@ bucketloop:
 	// If we hit the max load factor or we have too many overflow buckets,
 	// and we're not already in the middle of growing, start growing.
 	if !h.growing() && (overLoadFactor(h.count+1, h.B) || tooManyOverflowBuckets(h.noverflow, h.B)) {
+        //判断是还不是要扩容了，看增长银子和overflow比例
 		hashGrow(t, h)
 		goto again // Growing the table invalidates everything, so try again
 	}
-
+    //如果isnertb为空，就需要插入一个新的到后面。
 	if insertb == nil {
 		// The current bucket and all the overflow buckets connected to it are full, allocate a new one.
 		insertb = h.newoverflow(t, b)
 		inserti = 0 // not necessary, but avoids needlessly spilling inserti
 	}
+    //找到新的要插入或者更新的位置。更新top值以及更新key值
 	insertb.tophash[inserti&(bucketCnt-1)] = top // mask inserti to avoid bounds checks
 
 	insertk = add(unsafe.Pointer(insertb), dataOffset+inserti*2*goarch.PtrSize)
@@ -290,10 +303,12 @@ bucketloop:
 	h.count++
 
 done:
+    //返回后面的元素所在的位置，供上层进行写入。
 	elem := add(unsafe.Pointer(insertb), dataOffset+bucketCnt*2*goarch.PtrSize+inserti*uintptr(t.elemsize))
 	if h.flags&hashWriting == 0 {
 		throw("concurrent map writes")
 	}
+    //去掉key写入标志, 返回value所在的位置起始
 	h.flags &^= hashWriting
 	return elem
 }
